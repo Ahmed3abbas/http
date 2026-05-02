@@ -1,0 +1,127 @@
+Many-to-Many Example: Student ↔ Course
+(A student can enroll in many courses. A course can have many students.)
+
+CHANGE 1 — Add a Junction Model (new file)
+Models/StudentCourse.cs
+This is the only truly new file. It's the bridge table between the two
+
+// Junction table: sits between Student and Course
+// Holds the FK of BOTH tables as a composite key
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
+namespace StudentAPI.Models
+{
+    public class StudentCourse
+    {
+        // FK to Students table
+        public int StudentId { get; set; }
+
+        // FK to Courses table
+        public int CourseId { get; set; }
+
+        // Navigation to Student
+        [ForeignKey("StudentId")]
+        public Student? Student { get; set; }
+
+        // Navigation to Course
+        [ForeignKey("CourseId")]
+        public Course? Course { get; set; }
+    }
+}
+
+
+CHANGE 2 — Both Models get ICollection of each other
+In Student.cs — add this at the bottom:
+
+// A student can enroll in MANY courses
+[JsonIgnore]
+public ICollection<StudentCourse>? StudentCourses { get; set; }
+In Course.cs — (new model, same pattern as Department):
+public class Course
+{
+    [Key]
+    public int Id { get; set; }
+
+    [Required]
+    public string? Name { get; set; }  // e.g. "C#", "Python", "DBMS"
+
+    // A course can have MANY students enrolled
+    [JsonIgnore]
+    public ICollection<StudentCourse>? StudentCourses { get; set; }
+}
+
+CHANGE 3 — DbContext: add junction table + configure composite key
+
+
+public DbSet<Course> Courses { get; set; }
+public DbSet<StudentCourse> StudentCourses { get; set; }
+
+// Override OnModelCreating to set COMPOSITE PRIMARY KEY
+// Junction table has no single Id — both FKs together = primary key
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<StudentCourse>()
+        .HasKey(sc => new { sc.StudentId, sc.CourseId }); // Composite PK
+}
+
+CHANGE 4 — Controller: use ThenInclude for nested joins
+In StudentController.cs, wherever you have .Include():
+
+// One-to-Many was:
+.Include(s => s.Department)
+
+// Many-to-Many becomes:
+.Include(s => s.StudentCourses)       // Join to junction table
+    .ThenInclude(sc => sc.Course)     // Then join to Course table
+
+
+    For enrolling a student in a course (POST to junction table):
+
+    // POST: api/studentcourse
+// Body: { "studentId": 1, "courseId": 3 }
+[HttpPost]
+public async Task<IActionResult> Enroll([FromBody] StudentCourse sc)
+{
+    // Check if already enrolled (avoid duplicate)
+    bool exists = _context.StudentCourses
+        .Any(x => x.StudentId == sc.StudentId && x.CourseId == sc.CourseId);
+
+    if (exists)
+        return BadRequest(new { message = "Already enrolled!" });
+
+    _context.StudentCourses.Add(sc);
+    await _context.SaveChangesAsync();
+    return Ok(new { message = "Enrolled successfully" });
+}
+
+// DELETE: api/studentcourse?studentId=1&courseId=3
+[HttpDelete]
+public async Task<IActionResult> UnEnroll(int studentId, int courseId)
+{
+    var record = await _context.StudentCourses
+        .FirstOrDefaultAsync(x => x.StudentId == studentId && x.CourseId == courseId);
+
+    if (record == null) return NotFound();
+
+    _context.StudentCourses.Remove(record);
+    await _context.SaveChangesAsync();
+    return Ok(new { message = "Removed" });
+}
+
+Add-Migration ManyToManySetup
+Update-Database
+
+EF sees the composite key config and creates all 3 tables automatically:
+Students | Courses | StudentCourses (with FK constraints on both sides)
+
+
+{
+  "id": 1,
+  "name": "Raj",
+  "studentCourses": [
+    { "courseId": 1, "course": { "name": "C#" } },
+    { "courseId": 2, "course": { "name": "Python" } }
+  ]
+}
+
